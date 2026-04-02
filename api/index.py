@@ -1,72 +1,23 @@
 """
 SeedDiary - Vercel Serverless 后端
-所有 API 路由整合在一个文件
+所有 API 路由整合在一个文件，纯内存存储
 """
 import os
 import re
 import uuid
 import json
 from datetime import datetime, timedelta
-from functools import lru_cache
 
-from fastapi import FastAPI, Depends, HTTPException, Request, Header
+from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, List
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, ForeignKey, Text, Boolean
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import sessionmaker, declarative_base, relationship
-import enum
+from pydantic import BaseModel
+from typing import Optional
 
-# ── 数据库配置 ────────────────────────────────
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "your-key")
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
-
-engine = None
-SessionLocal = None
-Base = declarative_base()
-
-if DATABASE_URL:
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
-
-def get_db():
-    if not SessionLocal:
-        return None
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# ── JWT 密钥 ────────────────────────────────
+SECRET_KEY = os.getenv("SECRET_KEY", "seeddiary-dev-secret-2024")
 
 
-# ── 数据模型 ────────────────────────────────
-class WordStatus(str, enum.Enum):
-    LEARNING = "learning"
-    MASTERED = "mastered"
-
-class User(Base):
-    __tablename__ = "users"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    phone = Column(String(20), unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    total_words_mastered = Column(Integer, default=0)
-
-class UserWordProgress(Base):
-    __tablename__ = "user_word_progress"
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
-    word_term = Column(String(100))
-    scene = Column(String(50))
-    status = Column(String(20), default=WordStatus.LEARNING.value)
-    correct_count = Column(Integer, default=0)
-    next_review_at = Column(DateTime)
-    last_reviewed_at = Column(DateTime)
-
-
-# ── Mock 词根数据（Vercel 免费版无法持久化数据库，用内存数据）───
+# ── Mock 词根数据 ────────────────────────────
 MOCK_WORDS = {
     "interview": [
         {
@@ -102,7 +53,6 @@ MOCK_WORDS = {
             "term": "thoroughly", "phonetic": "/ˈθʌrəli/", "translation": "彻底地",
             "color": "#F97316",
             "context": "I conducted a **thoroughly** analysis of the market.",
-            "prefix": None,
             "root": {"value": "thorough", "meaning": "穿透、彻底", "note": "古英语 durch"},
             "suffix": {"value": "-ly", "meaning": "副词后缀", "note": "形容词变副词"},
             "logic": "thorough（彻底的）+ ly = 彻底地",
@@ -188,7 +138,6 @@ MOCK_WORDS = {
             "term": "luggage", "phonetic": "/ˈlʌɡɪdʒ/", "translation": "行李",
             "color": "#3B82F6",
             "context": "My **luggage** exceeded the weight limit at the airport.",
-            "prefix": None,
             "root": {"value": "lug", "meaning": "拖、拉", "note": "古英语 log"},
             "suffix": {"value": "-gage", "meaning": "担保", "note": "引申为托运的东西"},
             "logic": "lug（拖）+ gage = 需要拖着走的东西 → luggage（行李）",
@@ -203,7 +152,6 @@ MOCK_WORDS = {
             "context": "I'm checking in at the **airport**.",
             "prefix": {"value": "air-", "meaning": "天空", "note": "表示空中"},
             "root": {"value": "port", "meaning": "港口", "note": "源自拉丁语 portus"},
-            "suffix": None,
             "logic": "air（天空）+ port（港口）= 飞机停靠的港口 → airport（机场）",
             "relatedWords": [
                 {"term": "export", "phonetic": "/ɪkˈspɔːt/", "translation": "出口"},
@@ -243,10 +191,9 @@ MOCK_WORDS = {
             "term": "actively", "phonetic": "/ˈæktɪvli/", "translation": "积极地",
             "color": "#3B82F6",
             "context": "I **actively** learn and improve myself every day.",
-            "prefix": {"value": "act-", "meaning": "行动", "note": "源自拉丁语 agere"},
-            "root": {"value": "iv", "meaning": "...的", "note": "形容词后缀"},
-            "suffix": {"value": "-ly", "meaning": "副词后缀", "note": "形容词变副词"},
-            "logic": "act（行动）+ iv + ly = 用行动的方式 → actively（积极地）",
+            "root": {"value": "act", "meaning": "行动", "note": "源自拉丁语 agere"},
+            "suffix": {"value": "-ively", "meaning": "副词后缀", "note": "形容词变副词"},
+            "logic": "act（行动）+ ively = 用行动的方式 → actively（积极地）",
             "relatedWords": [
                 {"term": "action", "phonetic": "/ˈækʃən/", "translation": "行动"},
                 {"term": "activity", "phonetic": "/ækˈtɪvəti/", "translation": "活动"},
@@ -271,9 +218,8 @@ MOCK_WORDS = {
             "term": "capable", "phonetic": "/ˈkeɪpəbl/", "translation": "有能力的",
             "color": "#F97316",
             "context": "I become more **capable** in facing challenges.",
-            "prefix": {"value": "cap-", "meaning": "拿、取", "note": "源自拉丁语 capere"},
-            "root": {"value": "-able", "meaning": "能够...的", "note": "形容词后缀"},
-            "suffix": None,
+            "root": {"value": "cap", "meaning": "拿、取", "note": "源自拉丁语 capere"},
+            "suffix": {"value": "-able", "meaning": "能够...的", "note": "形容词后缀"},
             "logic": "cap（拿）+ able（能够）= 能够抓住机会 → capable（有能力的）",
             "relatedWords": [
                 {"term": "capacity", "phonetic": "/kəˈpæsəti/", "translation": "容量、能力"},
@@ -285,10 +231,9 @@ MOCK_WORDS = {
             "term": "challenge", "phonetic": "/ˈtʃælɪndʒ/", "translation": "挑战",
             "color": "#A78BFA",
             "context": "I grow stronger in facing various **challenges**.",
-            "prefix": {"value": "chal-", "meaning": "呼叫", "note": "源自古法语 chaloir"},
-            "root": {"value": "-leng", "meaning": "长", "note": "古英语 langr"},
-            "suffix": {"value": "-e", "meaning": "名词后缀", "note": "构成名词"},
-            "logic": "chall（挑战）+ enge = 需要长期坚持才能克服 → challenge（挑战）",
+            "root": {"value": "chall", "meaning": "呼叫", "note": "源自古法语 chaloir"},
+            "suffix": {"value": "-enge", "meaning": "名词后缀", "note": "构成名词"},
+            "logic": "chall（呼叫）+ enge = 需要勇敢应对 → challenge（挑战）",
             "relatedWords": [
                 {"term": "discharge", "phonetic": "/dɪsˈtʃɑːdʒ/", "translation": "释放"},
                 {"term": "recharge", "phonetic": "/riːˈtʃɑːdʒ/", "translation": "充电"},
@@ -321,14 +266,13 @@ SCENE_TRANSLATIONS = {
     },
 }
 
-COLORS = ["#3B82F6", "#22C55E", "#F97316", "#A78BFA", "#6366F1", "#EC4899"]
 
 def detect_scene(text: str) -> str:
-    text = text.lower()
+    text_lower = text.lower()
     max_hits = 0
     best_scene = "daily"
     for scene, data in SCENE_TRANSLATIONS.items():
-        hits = sum(1 for t in data["trigger"] if t in text)
+        hits = sum(1 for t in data["trigger"] if t in text_lower)
         if hits > max_hits:
             max_hits = hits
             best_scene = scene
@@ -347,7 +291,7 @@ app.add_middleware(
 )
 
 
-# ── 请求/响应模型 ────────────────────────────────
+# ── 请求模型 ────────────────────────────────
 class LoginRequest(BaseModel):
     phone: str
     code: str
@@ -360,21 +304,24 @@ class RecordLearningRequest(BaseModel):
     scene: str
 
 
-# ── 内存存储（Vercel serverless 专用）───────────
-users_db = {}   # phone -> {id, phone, created_at, total_words_mastered}
-progress_db = {}  # f"{user_id}:{word_term}" -> {status, correct_count}
+# ── 内存存储 ─────────────────────────────────
+users_db: dict = {}
+progress_db: dict = {}
 
-# ── JWT 工具 ────────────────────────────────────
+
+# ── JWT 工具 ─────────────────────────────────
 from jose import jwt
+
 def create_token(user_id: str) -> str:
     return jwt.encode(
         {"sub": user_id, "exp": datetime.utcnow() + timedelta(days=7)},
         SECRET_KEY, algorithm="HS256"
     )
+
 def decode_token(token: str) -> Optional[str]:
     try:
         return jwt.decode(token, SECRET_KEY, algorithms=["HS256"]).get("sub")
-    except:
+    except Exception:
         return None
 
 def get_user_from_header(authorization: Optional[str]):
@@ -385,27 +332,29 @@ def get_user_from_header(authorization: Optional[str]):
     return users_db.get(user_id) if user_id else None
 
 
-# ── API 路由 ───────────────────────────────────
-
+# ── API 路由 ─────────────────────────────────
 @app.get("/")
 def root():
     return {"app": "SeedDiary API", "version": "1.0.0", "status": "running"}
 
 @app.get("/health")
 def health():
-    return "OK"
+    return {"status": "ok"}
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest, db=Depends(get_db)):
+def login(req: LoginRequest):
+    # 演示验证码：123456
     if req.code != "123456":
         raise HTTPException(status_code=400, detail="验证码错误")
 
     # 查找或创建用户
-    for u in users_db.values():
-        if u["phone"] == req.phone:
+    user = None
+    for uid, u in users_db.items():
+        if u.get("phone") == req.phone:
             user = u
             break
-    else:
+
+    if user is None:
         user_id = str(uuid.uuid4())
         user = {
             "id": user_id,
@@ -414,17 +363,15 @@ def login(req: LoginRequest, db=Depends(get_db)):
             "total_words_mastered": 0,
         }
         users_db[user_id] = user
-        users_db[req.phone] = user
 
     token = create_token(user["id"])
     return {"access_token": token, "token_type": "bearer", "user_id": user["id"]}
 
 @app.post("/api/translate")
-def translate(req: TranslateRequest, db=Depends(get_db)):
+def translate(req: TranslateRequest):
     scene = detect_scene(req.scene)
     translation = SCENE_TRANSLATIONS[scene]
     words = MOCK_WORDS.get(scene, [])
-
     return {
         "english": translation["english"],
         "meaning": translation["meaning"],
@@ -451,9 +398,11 @@ def get_stats(authorization: Optional[str] = Header(None)):
     if not user:
         return {"total_words_mastered": 0, "total_learned": 0}
 
-    mastered = sum(1 for k, v in progress_db.items()
-                    if k.startswith(user["id"]) and v.get("status") == "mastered")
-    total = sum(1 for k in progress_db if k.startswith(user["id"]))
+    mastered = sum(
+        1 for k, v in progress_db.items()
+        if k.startswith(user["id"] + ":") and v.get("status") == "mastered"
+    )
+    total = sum(1 for k in progress_db if k.startswith(user["id"] + ":"))
 
     return {
         "total_words_mastered": mastered,
